@@ -26,6 +26,16 @@ const voiceAttemptSchema = new Schema(
   { _id: false },
 );
 
+// One spoken question. keyPoints come from the user's own notes (empty for a
+// built-in topic) and, like answerIndex above, never leave the server.
+const voiceQuestionSchema = new Schema({
+  prompt: { type: String, required: true },
+  keyPoints: { type: [String], default: [] },
+  attempts: { type: [voiceAttemptSchema], default: [] },
+  bestScore: { type: Number, default: 0 },
+  solved: { type: Boolean, default: false },
+});
+
 const resultSchema = new Schema(
   {
     success: Boolean,
@@ -46,10 +56,9 @@ const sessionSchema = new Schema(
     topic: { type: String, required: true },
     noteId: { type: Schema.Types.ObjectId, ref: 'Note' },
     difficulty: { type: String, enum: DIFFICULTIES, required: true },
-    status: { type: String, enum: ['active', 'completed', 'abandoned'], default: 'active' },
+    status: { type: String, enum: ['active', 'completed'], default: 'active' },
     questions: [sessionQuestionSchema],
-    voicePrompt: String,
-    voiceAttempts: [voiceAttemptSchema],
+    voiceQuestions: [voiceQuestionSchema],
     startedAt: { type: Date, default: Date.now },
     completedAt: Date,
     result: resultSchema,

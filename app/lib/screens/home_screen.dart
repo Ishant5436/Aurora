@@ -211,7 +211,11 @@ class _AlarmCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.colors;
     final app = context.read<AppState>();
-    final kind = alarm.hasNote ? 'Notes' : alarm.effectiveType;
+    final kind = alarm.type == 'Voice' ? 'Voice interview' : alarm.type;
+    // Spell out the source, so it is clear what this alarm will quiz on.
+    final source = alarm.hasNote
+        ? (app.notes.where((n) => n.id == alarm.noteId).firstOrNull?.title ?? 'My notes')
+        : alarm.topic;
 
     return Dismissible(
       key: ValueKey(alarm.id),
@@ -242,6 +246,12 @@ class _AlarmCard extends StatelessWidget {
                     Text(
                       '${alarm.label} $kMiddot $kind $kMiddot ${alarm.difficulty}',
                       style: Typo.sans(14, color: c.mutedForeground),
+                    ),
+                    Text(
+                      '${alarm.hasNote ? 'Notes' : 'Topic'}: $source',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Typo.sans(12, color: c.mutedForeground.withValues(alpha: 0.85)),
                     ),
                     const SizedBox(height: 6),
                     Row(

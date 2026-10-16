@@ -42,13 +42,20 @@ void main() {
       expect(a.isOneShot, isTrue);
     });
 
-    test('a note forces multiple choice and clearNote reverts it', () {
+    test('a note changes the source but never the chosen type', () {
       final a = AlarmModel.fromJson(json).copyWith(noteId: 'n1');
       expect(a.hasNote, isTrue);
-      expect(a.effectiveType, 'MCQ');
+      expect(a.type, 'Voice', reason: 'notes can back a voice interview too');
       final cleared = a.copyWith(clearNote: true);
       expect(cleared.noteId, isNull);
-      expect(cleared.effectiveType, 'Voice');
+      expect(cleared.type, 'Voice');
+    });
+
+    test('only multiple choice can do without the microphone', () {
+      final base = AlarmModel.fromJson(json);
+      expect(base.copyWith(type: 'MCQ').usesVoice, isFalse);
+      expect(base.copyWith(type: 'Voice').usesVoice, isTrue);
+      expect(base.copyWith(type: 'Random').usesVoice, isTrue);
     });
   });
 
@@ -83,18 +90,42 @@ void main() {
       expect(s.questions.single.options, hasLength(4));
     });
 
-    test('a voice session carries the prompt and pass mark', () {
+    test('a voice session carries its spoken questions and the pass mark', () {
       final s = ChallengeSession.fromJson({
         'id': 's2',
         'kind': 'voice',
         'topic': 'Databases',
         'difficulty': 'Medium',
-        'prompt': 'Explain indexes',
+        'total': 2,
         'passScore': 70,
+        'questions': [
+          {'id': 'v1', 'text': 'Explain indexes', 'solved': false, 'attempts': 0},
+          {'id': 'v2', 'text': 'Explain transactions', 'solved': false, 'attempts': 0},
+        ],
       });
       expect(s.isVoice, isTrue);
-      expect(s.prompt, 'Explain indexes');
+      expect(s.questions.map((q) => q.text), ['Explain indexes', 'Explain transactions']);
+      expect(s.questions.first.options, isEmpty);
       expect(s.passScore, 70);
+    });
+
+    test('a graded answer says whether the question is passed and what remains', () {
+      final g = VoiceGrade.fromJson(
+        {'score': 82, 'feedback': 'Good', 'passed': true, 'passScore': 70, 'mock': false, 'remaining': 1},
+      );
+      expect(g.passed, isTrue);
+      expect(g.remaining, 1);
+    });
+
+    test('notes report whether they can back a voice interview', () {
+      final withInterview = NoteModel.fromJson(
+        {'id': 'n1', 'title': 'Cells', 'sourceType': 'text', 'questionCount': 12, 'interviewCount': 6},
+      );
+      final quizOnly = NoteModel.fromJson(
+        {'id': 'n2', 'title': 'Old notes', 'sourceType': 'file', 'questionCount': 12},
+      );
+      expect(withInterview.supportsVoice, isTrue);
+      expect(quizOnly.supportsVoice, isFalse);
     });
 
     test('results format their duration', () {

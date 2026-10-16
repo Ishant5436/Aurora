@@ -307,11 +307,11 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Opens the alarm's challenge. What it asks (type, topic or notes, difficulty,
+  /// question count) comes from the alarm alone; nothing is swapped or downgraded.
   Future<ChallengeSession> startChallenge() async {
     final alarm = ringingAlarm!;
-    // With the microphone switched off, voice alarms fall back to multiple choice.
-    final downgrade = !settings.microphone && alarm.effectiveType != 'MCQ';
-    final json = await api.startChallenge(alarmId: alarm.id, kind: downgrade ? 'mcq' : null);
+    final json = await api.startChallenge(alarmId: alarm.id);
     session = ChallengeSession.fromJson(json['session'] as Map<String, dynamic>);
     result = null;
     notifyListeners();
@@ -321,8 +321,8 @@ class AppState extends ChangeNotifier {
   Future<AnswerResult> answer(String questionId, int selected) async =>
       AnswerResult.fromJson(await api.answer(session!.id, questionId, selected));
 
-  Future<VoiceGrade> submitVoice(int seconds, String base64Wav) async =>
-      VoiceGrade.fromJson(await api.submitVoice(session!.id, seconds, base64Wav));
+  Future<VoiceGrade> submitVoice(String questionId, int seconds, String base64Wav) async =>
+      VoiceGrade.fromJson(await api.submitVoice(session!.id, questionId, seconds, base64Wav));
 
   Future<ChallengeResult> completeChallenge() async {
     final json = await api.complete(session!.id);
@@ -332,21 +332,21 @@ class AppState extends ChangeNotifier {
   }
 
   /// Ends the ring: silences the alarm and schedules its next occurrence.
-  /// [emergency] skips the quiz; the server records that the challenge was abandoned.
-  Future<void> dismissAlarm({bool emergency = false}) async {
+  ///
+  /// There is deliberately no way to skip the challenge. A real alarm stops only
+  /// after a passed result; a preview (started from the home screen, nothing is
+  /// ringing) can be left at any time.
+  Future<void> dismissAlarm() async {
     final alarm = ringingAlarm;
-    final current = session;
+    if (alarm == null) return;
     final wasPreview = previewMode;
+    if (!wasPreview && result?.success != true) return;
+
     ringingAlarm = null;
     session = null;
     result = null;
     previewMode = false;
     notifyListeners();
-    if (alarm == null) return;
-
-    if (emergency && current != null) {
-      unawaited(api.abandon(current.id).catchError((Object _) {}));
-    }
     if (wasPreview) return;
 
     await scheduler.stopRinging(alarm.id);

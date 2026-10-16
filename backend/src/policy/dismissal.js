@@ -9,7 +9,9 @@ const VOICE_PASS_SCORE = { Easy: 60, Medium: 70, Hard: 80 };
  * difficulty: 'Easy' | 'Medium' | 'Hard'
  * accuracy:   0-100. For MCQ it is the share of questions answered correctly on
  *             the FIRST try (every question is eventually solved before we get
- *             here). For voice it is the best score across the attempts.
+ *             here). For voice it is the average of each question's best score;
+ *             a spoken question only counts as answered once it reaches
+ *             VOICE_PASS_SCORE, so this average is always at or above the mark.
  *
  * TODO(human): this is the policy that decides how strict your alarm is.
  * Trade-offs worth deciding:

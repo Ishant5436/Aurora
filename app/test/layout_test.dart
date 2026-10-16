@@ -135,8 +135,14 @@ void main() {
                 kind: 'voice',
                 topic: 'Databases',
                 difficulty: 'Hard',
-                prompt: 'Explain how a database index speeds up queries, and describe one trade-off of adding '
-                    'too many indexes to a table that is written to constantly.',
+                questions: [
+                  QuizQuestion(
+                    id: 'v1',
+                    text: 'Explain how a database index speeds up queries, and describe one trade-off of adding '
+                        'too many indexes to a table that is written to constantly.',
+                  ),
+                  QuizQuestion(id: 'v2', text: 'Describe what the ACID properties guarantee for a transaction.'),
+                ],
                 passScore: 80,
               );
             }

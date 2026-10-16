@@ -33,21 +33,7 @@ class ResultsScreen extends StatelessWidget {
                 if (context.mounted) context.go('/home');
               },
             )
-          : Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                GoldButton(label: 'Retry Challenge', onPressed: () => context.go('/ring')),
-                const SizedBox(height: 8),
-                GoldButton(
-                  label: 'Emergency Dismiss',
-                  variant: GoldVariant.ghost,
-                  onPressed: () async {
-                    await app.dismissAlarm(emergency: true);
-                    if (context.mounted) context.go('/home');
-                  },
-                ),
-              ],
-            ),
+          : GoldButton(label: 'Retry Challenge', onPressed: () => context.go('/ring')),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [

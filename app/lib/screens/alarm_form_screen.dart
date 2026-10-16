@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:record/record.dart';
 
 import '../config.dart';
 import '../models/constants.dart';
@@ -60,7 +61,41 @@ class _AlarmFormScreenState extends State<AlarmFormScreen> {
     super.dispose();
   }
 
+  Future<bool> _hasMicrophone() async {
+    final probe = AudioRecorder();
+    try {
+      return await probe.hasPermission();
+    } catch (_) {
+      return false; // no usable microphone: the interview could never be answered
+    } finally {
+      try {
+        await probe.dispose();
+      } catch (_) {
+        // nothing to release if the plugin never started
+      }
+    }
+  }
+
   Future<void> _save(AppState app) async {
+    // Catch alarms that could never be answered now, not when one is ringing.
+    final note = _noteId == null ? null : app.notes.where((n) => n.id == _noteId).firstOrNull;
+    if (_noteId != null && note == null) {
+      setState(() => _error = 'Choose which notes this alarm should use.');
+      return;
+    }
+    if (_type == 'Voice' && note != null && !note.supportsVoice) {
+      setState(() => _error = 'These notes were uploaded before voice interviews existed, so they can only back '
+          'multiple choice. Upload them again to be asked spoken questions.');
+      return;
+    }
+    if (_type != 'MCQ' && !await _hasMicrophone()) {
+      if (mounted) {
+        setState(() => _error = 'Voice interviews need microphone access. Allow it in the phone settings, then save again.');
+      }
+      return;
+    }
+    if (!mounted) return;
+
     setState(() {
       _busy = true;
       _error = null;
@@ -73,7 +108,7 @@ class _AlarmFormScreenState extends State<AlarmFormScreen> {
       days: ([..._days]..sort()),
       enabled: _existing?.enabled ?? true,
       difficulty: _difficulty,
-      type: _noteId != null ? 'MCQ' : _type,
+      type: _type,
       questions: _questions,
       topic: _topic,
       noteId: _noteId,
@@ -119,7 +154,6 @@ class _AlarmFormScreenState extends State<AlarmFormScreen> {
     }
 
     final usesNotes = _noteId != null;
-    final effectiveType = usesNotes ? 'MCQ' : _type;
 
     return Screen(
       footer: GoldButton(label: 'Save Alarm', busy: _busy, onPressed: () => _save(app)),
@@ -236,7 +270,6 @@ class _AlarmFormScreenState extends State<AlarmFormScreen> {
                 _noteId = null;
               } else {
                 _noteId = app.notes.firstOrNull?.id;
-                if (_noteId != null) _type = 'MCQ';
               }
             }),
           ),
@@ -247,7 +280,11 @@ class _AlarmFormScreenState extends State<AlarmFormScreen> {
               runSpacing: 8,
               children: [
                 for (final n in app.notes)
-                  AuroraChip(label: n.title, active: _noteId == n.id, onTap: () => setState(() => _noteId = n.id)),
+                  AuroraChip(
+                    label: n.supportsVoice ? n.title : '${n.title} (quiz only)',
+                    active: _noteId == n.id,
+                    onTap: () => setState(() => _noteId = n.id),
+                  ),
               ],
             )
           else if (_noteId == null && app.notes.isEmpty)
@@ -275,27 +312,38 @@ class _AlarmFormScreenState extends State<AlarmFormScreen> {
             ),
           const SizedBox(height: 24),
           const SectionLabel('Challenge'),
-          if (usesNotes)
-            Text('Quizzes from your notes are multiple choice.', style: Typo.sans(13, color: c.mutedForeground))
-          else
-            ChipRow(
-              options: kChallengeTypes,
-              value: _type,
-              labelFor: (t) => t == 'Voice' ? 'Voice Interview' : t,
-              onChanged: (v) => setState(() => _type = v),
-            ),
-          if (effectiveType != 'Voice') ...[
-            const SizedBox(height: 24),
-            SectionLabel('Questions to dismiss $kMiddot $_questions'),
-            Slider(
-              value: _questions.toDouble(),
-              min: 1,
-              max: 4,
-              divisions: 3,
-              label: '$_questions',
-              onChanged: (v) => setState(() => _questions = v.round()),
-            ),
-          ],
+          ChipRow(
+            options: kChallengeTypes,
+            value: _type,
+            labelFor: (t) => t == 'Voice' ? 'Voice Interview' : t,
+            onChanged: (v) => setState(() => _type = v),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            switch (_type) {
+              'Voice' => 'Spoken questions, answered aloud and graded by the AI examiner. '
+                  'Needs the microphone and an internet connection.',
+              'Random' => 'Each ring is either written or spoken, chosen at random.',
+              _ => 'Multiple-choice questions.',
+            },
+            style: Typo.sans(12, color: c.mutedForeground),
+          ),
+          const SizedBox(height: 24),
+          SectionLabel('Questions to dismiss $kMiddot $_questions'),
+          Slider(
+            value: _questions.toDouble(),
+            min: 1,
+            max: 4,
+            divisions: 3,
+            label: '$_questions',
+            onChanged: (v) => setState(() => _questions = v.round()),
+          ),
+          Text(
+            usesNotes
+                ? 'Every question comes from the notes you chose, and nothing else.'
+                : 'Every question is about the topic you chose, at the difficulty you chose.',
+            style: Typo.sans(12, color: c.mutedForeground),
+          ),
           if (_error != null) ...[
             const SizedBox(height: 16),
             InlineMessage(_error!, isError: true),

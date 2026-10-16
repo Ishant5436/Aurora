@@ -6,7 +6,7 @@ const gemini = require('./gemini');
 const env = require('../config/env');
 const { DIFFICULTIES } = require('../config/constants');
 const { generatedQuestion, shuffleWithAnswer, upsertQuestions, hashText } = require('./questions');
-const { HttpError, badRequest, unavailable } = require('../middleware/errors');
+const { HttpError, badRequest, conflict, unavailable } = require('../middleware/errors');
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TEXT_CHARS = 60_000;
@@ -16,9 +16,20 @@ const MAX_NOTES_PER_USER = 30;
 const TEXT_TYPES = new Set(['text/plain', 'text/markdown']);
 const PDF_TYPE = 'application/pdf';
 
+const interviewItem = z.object({
+  prompt: z.string().min(15).max(300),
+  keyPoints: z.array(z.string().min(3).max(240)).min(2).max(8),
+});
+
 const generationReply = z.object({
   title: z.string().min(1).max(80).optional(),
   questions: z.array(generatedQuestion).min(3),
+  // Lenient on purpose: malformed interview items are dropped rather than
+  // failing the upload, since the quiz alone is still useful.
+  interview: z
+    .array(z.unknown())
+    .catch([])
+    .transform((items) => items.map((i) => interviewItem.safeParse(i)).filter((r) => r.success).map((r) => r.data)),
 });
 
 function buildPrompt({ material, hasPdf, wantTitle }) {
@@ -31,10 +42,13 @@ function buildPrompt({ material, hasPdf, wantTitle }) {
     'Write 12 questions that test understanding of the notes (4 Easy, 5 Medium, 3 Hard).',
     'Rules: exactly 4 distinct options, exactly one correct, plausible distractors, no "all of the above",',
     'each question self-contained and answerable from the notes alone.',
+    'Also write 6 open-ended oral interview questions based only on the notes, each answerable aloud in about',
+    'a minute, with 3 to 5 keyPoints that a strong spoken answer should mention.',
     'Return JSON: {' +
       (wantTitle ? '"title": short title under 60 characters, ' : '') +
       '"questions":[{"text":string,"options":[string,string,string,string],"answerIndex":0-3,' +
-      `"difficulty":"${DIFFICULTIES.join('|')}","explanation":"one sentence"}]}`,
+      `"difficulty":"${DIFFICULTIES.join('|')}","explanation":"one sentence"}],` +
+      '"interview":[{"prompt":string,"keyPoints":[string,...]}]}',
   ].join('\n');
 }
 
@@ -95,6 +109,8 @@ async function createNoteFromUpload({ userId, title, text, file }) {
     title: (title || reply.title || 'Untitled notes').trim().slice(0, 80),
     sourceType: upload.sourceType,
     questionCount: reply.questions.length,
+    interview: reply.interview.slice(0, 8),
+    interviewCount: Math.min(reply.interview.length, 8),
   });
   await upsertQuestions(
     reply.questions.map(shuffleWithAnswer).map((q) => ({
@@ -113,13 +129,20 @@ async function createNoteFromUpload({ userId, title, text, file }) {
   return note;
 }
 
+// A note an alarm still uses cannot be deleted: silently switching that alarm to
+// some other source would break the promise that it quizzes you on what you chose.
 async function deleteNote({ userId, noteId }) {
-  const note = await Note.findOneAndDelete({ _id: noteId, userId });
+  const note = await Note.findOne({ _id: noteId, userId });
   if (!note) return null;
-  await Promise.all([
-    Question.deleteMany({ noteId: note._id }),
-    Alarm.updateMany({ userId, noteId: note._id }, { $set: { noteId: null } }),
-  ]);
+  const inUse = await Alarm.countDocuments({ userId, noteId: note._id });
+  if (inUse > 0) {
+    throw conflict(
+      `These notes are used by ${inUse} alarm${inUse > 1 ? 's' : ''}. ` +
+        `Change or delete ${inUse > 1 ? 'those alarms' : 'that alarm'} first.`,
+    );
+  }
+  await Note.deleteOne({ _id: note._id });
+  await Question.deleteMany({ noteId: note._id });
   return note;
 }
 

@@ -36,8 +36,39 @@ const _settings = {
   'haptics': true,
   'animations': true,
   'notifications': true,
-  'microphone': false,
   'theme': 'dark',
+};
+
+const _mcqSession = {
+  'id': 's1',
+  'kind': 'mcq',
+  'topic': 'JavaScript',
+  'difficulty': 'Medium',
+  'status': 'active',
+  'total': 1,
+  'questions': [
+    {
+      'id': 'q1',
+      'text': 'Which data structure offers O(1) average lookup by key?',
+      'options': ['Linked list', 'Hash map', 'Binary heap', 'Stack'],
+      'solved': false,
+      'attempts': 0,
+    },
+  ],
+};
+
+const _voiceSession = {
+  'id': 's2',
+  'kind': 'voice',
+  'topic': 'JavaScript',
+  'difficulty': 'Medium',
+  'status': 'active',
+  'total': 2,
+  'passScore': 70,
+  'questions': [
+    {'id': 'v1', 'text': 'Explain how closures work in JavaScript and give one practical use for them.', 'solved': false, 'attempts': 0},
+    {'id': 'v2', 'text': 'Describe the JavaScript event loop and why long synchronous tasks block the UI.', 'solved': false, 'attempts': 0},
+  ],
 };
 
 http.Response _json(Object body, [int status = 200]) =>
@@ -45,10 +76,15 @@ http.Response _json(Object body, [int status = 200]) =>
 
 /// A scripted stand-in for the Aurora backend.
 class _FakeServer {
+  _FakeServer({this.alarm = _alarm});
+
+  /// The only alarm this user has; a 'Voice' type makes challenges voice interviews.
+  final Map<String, Object?> alarm;
   final calls = <String>[];
   bool offline = false;
   bool failPatch = false;
   int? lastSelected;
+  Map<String, dynamic>? lastStartBody;
 
   Future<http.Response> handle(http.Request req) async {
     if (offline) throw http.ClientException('no network');
@@ -63,32 +99,16 @@ class _FakeServer {
       case 'GET /api/settings':
         return _json({'settings': _settings});
       case 'GET /api/alarms':
-        return _json({'alarms': [_alarm]});
+        return _json({'alarms': [alarm]});
       case 'GET /api/notes':
         return _json({'notes': []});
       case 'PATCH /api/alarms/$_alarmId':
         if (failPatch) return _json({'error': {'code': 'boom', 'message': 'The server refused.'}}, 500);
         return _json({'alarm': {..._alarm, ...(jsonDecode(req.body) as Map<String, dynamic>)}});
       case 'POST /api/challenges/start':
-        return _json({
-          'session': {
-            'id': 's1',
-            'kind': 'mcq',
-            'topic': 'JavaScript',
-            'difficulty': 'Medium',
-            'status': 'active',
-            'total': 1,
-            'questions': [
-              {
-                'id': 'q1',
-                'text': 'Which data structure offers O(1) average lookup by key?',
-                'options': ['Linked list', 'Hash map', 'Binary heap', 'Stack'],
-                'solved': false,
-                'attempts': 0,
-              },
-            ],
-          },
-        }, 201);
+        lastStartBody = jsonDecode(req.body) as Map<String, dynamic>;
+        if (alarm['type'] == 'Voice') return _json({'session': _voiceSession}, 201);
+        return _json({'session': _mcqSession}, 201);
       case 'POST /api/challenges/s1/answer':
         final selected = (jsonDecode(req.body) as Map<String, dynamic>)['selected'] as int;
         lastSelected = selected;
@@ -117,13 +137,18 @@ class _Harness {
   final AppState app;
 }
 
-Future<_Harness> _boot(WidgetTester tester, {Map<String, Object> prefs = const {}, bool offline = false}) async {
+Future<_Harness> _boot(
+  WidgetTester tester, {
+  Map<String, Object> prefs = const {},
+  bool offline = false,
+  Map<String, Object?>? alarm,
+}) async {
   tester.view.physicalSize = const Size(900, 1800);
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
 
   SharedPreferences.setMockInitialValues(prefs);
-  final server = _FakeServer()..offline = offline;
+  final server = _FakeServer(alarm: alarm ?? _alarm)..offline = offline;
   final scheduler = NoopAlarmScheduler();
   final app = AppState(
     api: ApiClient(client: MockClient(server.handle), baseUrl: 'http://test'),
@@ -189,18 +214,46 @@ void main() {
     expect(h.scheduler.stopped, [_alarmId], reason: 'the OS alarm must be silenced');
   });
 
-  testWidgets('emergency dismiss silences the alarm after confirmation', (tester) async {
+  testWidgets('a real ringing alarm has no way out except its challenge', (tester) async {
     final h = await _boot(tester);
     h.scheduler.emitRing(_alarmId);
     await _advance(tester);
 
-    await tester.tap(find.text('EMERGENCY DISMISS'));
+    expect(find.text('The Hour Has Come'), findsOneWidget);
+    expect(find.textContaining(RegExp('emergency', caseSensitive: false)), findsNothing);
+    expect(find.text('EXIT PREVIEW'), findsNothing, reason: 'only previews can be left');
+
+    // Even asking the app to dismiss directly must not silence it without a pass.
+    await h.app.dismissAlarm();
+    expect(h.app.ringingAlarm, isNotNull);
+    expect(h.scheduler.stopped, isEmpty);
+  });
+
+  testWidgets('a preview can be left at any point without touching real alarms', (tester) async {
+    final h = await _boot(tester);
+    await tester.tap(find.text('PREVIEW'));
     await _advance(tester);
-    await tester.tap(find.text('Dismiss'));
+    expect(find.text('The Hour Has Come'), findsOneWidget);
+
+    await tester.tap(find.text('EXIT PREVIEW'));
+    await _advance(tester);
+    expect(find.text('Upcoming Alarms'), findsOneWidget);
+    expect(h.app.ringingAlarm, isNull);
+    expect(h.scheduler.stopped, isEmpty, reason: 'nothing was ringing, so there is nothing to stop');
+  });
+
+  testWidgets('a voice alarm opens the voice interview with nothing swapped or downgraded', (tester) async {
+    final h = await _boot(tester, alarm: {..._alarm, 'type': 'Voice', 'questions': 2});
+    h.scheduler.emitRing(_alarmId);
+    await _advance(tester);
+    await tester.tap(find.text('BEGIN CHALLENGE'));
     await _advance(tester);
 
-    expect(find.text('Upcoming Alarms'), findsOneWidget);
-    expect(h.scheduler.stopped, [_alarmId]);
+    expect(h.server.lastStartBody, {'alarmId': _alarmId}, reason: 'the app sends only the alarm id');
+    expect(find.text('Defend Thy Knowledge'), findsOneWidget);
+    expect(find.text('QUESTION 1 OF 2'), findsOneWidget);
+    expect(find.textContaining('closures'), findsOneWidget);
+    expect(find.text('A Trial of Knowledge'), findsNothing, reason: 'must not fall back to multiple choice');
   });
 
   testWidgets('a rejected toggle flips back and tells the user', (tester) async {

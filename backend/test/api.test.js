@@ -10,6 +10,7 @@ describe('Aurora API (no Gemini)', () => {
   let mongo;
   let api;
   let ChallengeSession;
+  let Question;
 
   before(async () => {
     mongo = await startMongod();
@@ -17,6 +18,7 @@ describe('Aurora API (no Gemini)', () => {
     const { createApp } = require('../src/app');
     const { ensureSeeded } = require('../src/services/questions');
     ChallengeSession = require('../src/models/ChallengeSession');
+    Question = require('../src/models/Question');
     await connectDb(mongo.uri);
     await initModels();
     await ensureSeeded();
@@ -213,47 +215,100 @@ describe('Aurora API (no Gemini)', () => {
       assert.equal((await complete()).status, 409, 'a finished challenge cannot be finished twice');
     });
 
-    it('falls back to a topic quiz when the note is missing, and can be abandoned', async () => {
-      const user = await signIn('mcq-fallback');
+    it('never substitutes another source: missing notes are an error, not a topic quiz', async () => {
+      const user = await signIn('mcq-source');
       const start = await user
         .auth(api.post('/api/challenges/start'))
         .send({ noteId: new mongoose.Types.ObjectId().toString(), count: 2 });
-      assert.equal(start.status, 201);
-      assert.equal(start.body.session.kind, 'mcq');
-      assert.equal(start.body.session.questions.length, 2);
+      assert.equal(start.status, 409);
+      assert.equal(start.body.error.code, 'source_missing');
+    });
 
-      const { id, questions } = start.body.session;
-      const abandon = await user.auth(api.post(`/api/challenges/${id}/abandon`)).send({});
-      assert.equal(abandon.body.status, 'abandoned');
-      const late = await user.auth(api.post(`/api/challenges/${id}/answer`)).send({ questionId: questions[0].id, selected: 0 });
-      assert.equal(late.status, 409);
+    it('stays on the selected topic and difficulty even when the bank is short', async () => {
+      const user = await signIn('mcq-strict');
+      // The seed bank holds a single Hard algorithms question and Gemini is off.
+      const start = await user
+        .auth(api.post('/api/challenges/start'))
+        .send({ topic: 'Algorithms', difficulty: 'Hard', count: 3 });
+      assert.equal(start.status, 201);
+
+      const texts = start.body.session.questions.map((q) => q.text);
+      assert.ok(texts.length >= 1 && texts.length < 3, 'fewer questions, never questions from elsewhere');
+      const stored = await Question.find({ text: { $in: texts } });
+      assert.equal(stored.length, texts.length);
+      assert.ok(stored.every((q) => q.topic === 'Algorithms' && q.difficulty === 'Hard'));
+    });
+
+    it('cannot be skipped: there is no way to abandon a challenge', async () => {
+      const user = await signIn('mcq-no-skip');
+      const { session } = (await user.auth(api.post('/api/challenges/start')).send({ count: 1 })).body;
+      const res = await user.auth(api.post(`/api/challenges/${session.id}/abandon`)).send({});
+      assert.equal(res.status, 404);
+      const complete = await user.auth(api.post(`/api/challenges/${session.id}/complete`)).send({});
+      assert.equal(complete.status, 409);
     });
   });
 
-  describe('voice challenge (dev heuristic)', () => {
-    it('grades attempts, enforces the pass mark and completes with the best one', async () => {
+  describe('voice interview (dev heuristic)', () => {
+    it('asks the requested number of spoken questions, each of which must pass', async () => {
       const user = await signIn('voice');
-      const start = await user.auth(api.post('/api/challenges/start')).send({ kind: 'voice', difficulty: 'Medium' });
+      const start = await user
+        .auth(api.post('/api/challenges/start'))
+        .send({ kind: 'voice', topic: 'JavaScript', difficulty: 'Medium', count: 2 });
       assert.equal(start.status, 201);
       const session = start.body.session;
       assert.equal(session.kind, 'voice');
-      assert.equal(typeof session.prompt, 'string');
+      assert.equal(session.total, 2);
+      assert.equal(session.questions.length, 2);
       assert.equal(session.passScore, 70);
+      assert.ok(!JSON.stringify(start.body).includes('keyPoints'), 'grading material stays on the server');
 
-      const speak = (seconds) => user.auth(api.post(`/api/challenges/${session.id}/voice`)).send({ seconds });
+      // Gemini is off, so the questions come from the built-in prompts for the SAME topic.
+      const { VOICE_PROMPTS } = require('../src/data/questionBank');
+      for (const q of session.questions) assert.ok(VOICE_PROMPTS.JavaScript.includes(q.text));
+      assert.notEqual(session.questions[0].text, session.questions[1].text);
+
+      const speak = (questionId, seconds) =>
+        user.auth(api.post(`/api/challenges/${session.id}/voice`)).send({ questionId, seconds });
       const complete = () => user.auth(api.post(`/api/challenges/${session.id}/complete`)).send({});
-      assert.equal((await complete()).status, 409, 'an answer is required first');
+      const [first, second] = session.questions;
+      assert.equal((await complete()).status, 409, 'nothing has been answered yet');
 
-      const short = await speak(5);
-      assert.equal(short.body.mock, true);
-      assert.equal(short.body.passed, false);
-      const long = await speak(10);
-      assert.equal(long.body.passed, true);
+      const short = await speak(first.id, 5); // mock score 65, below the pass mark of 70
+      assert.deepEqual(
+        { mock: short.body.mock, passed: short.body.passed, solved: short.body.solved, remaining: short.body.remaining },
+        { mock: true, passed: false, solved: false, remaining: 2 },
+      );
+      const good = await speak(first.id, 10); // mock score 75
+      assert.deepEqual(
+        { passed: good.body.passed, solved: good.body.solved, remaining: good.body.remaining },
+        { passed: true, solved: true, remaining: 1 },
+      );
+      assert.equal((await speak(first.id, 10)).status, 409, 'an answered question is closed');
+      assert.equal((await complete()).status, 409, 'the second question is still open');
 
+      assert.equal((await speak(second.id, 12)).body.remaining, 0); // mock score 79
       const done = await complete();
-      assert.equal(done.body.result.success, true);
-      assert.equal(done.body.result.accuracy, long.body.score);
-      assert.equal(done.body.result.attempts, 2);
+      assert.equal(done.status, 200);
+      assert.deepEqual(
+        { success: done.body.result.success, accuracy: done.body.result.accuracy, attempts: done.body.result.attempts },
+        { success: true, accuracy: 77, attempts: 3 },
+      );
+    });
+
+    it('is never turned into multiple choice: a Voice alarm always runs as a voice interview', async () => {
+      const user = await signIn('voice-alarm');
+      const alarm = (
+        await user
+          .auth(api.post('/api/alarms'))
+          .send({ hour: 6, minute: 0, type: 'Voice', questions: 2, topic: 'Networking', difficulty: 'Medium' })
+      ).body.alarm;
+      for (let i = 0; i < 5; i++) {
+        const start = await user.auth(api.post('/api/challenges/start')).send({ alarmId: alarm.id });
+        assert.equal(start.status, 201);
+        assert.equal(start.body.session.kind, 'voice');
+        assert.equal(start.body.session.questions.length, 2);
+      }
     });
 
     it('rejects an audio attachment with an unsupported type', async () => {
@@ -261,7 +316,7 @@ describe('Aurora API (no Gemini)', () => {
       const { session } = (await user.auth(api.post('/api/challenges/start')).send({ kind: 'voice' })).body;
       const res = await user
         .auth(api.post(`/api/challenges/${session.id}/voice`))
-        .send({ seconds: 3, audio: { mimeType: 'video/mp4', base64: 'AAAA' } });
+        .send({ questionId: session.questions[0].id, seconds: 3, audio: { mimeType: 'video/mp4', base64: 'AAAA' } });
       assert.equal(res.status, 400);
     });
   });

@@ -8,6 +8,7 @@ import '../services/api_client.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../theme/tokens.dart';
+import '../widgets/preview_bar.dart';
 import '../widgets/renaissance.dart';
 
 enum _Status { idle, right, wrong }
@@ -107,6 +108,7 @@ class _McqScreenState extends State<McqScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          const PreviewBar(),
           Text(
             'QUESTION ${_index + 1} OF $total',
             textAlign: TextAlign.center,

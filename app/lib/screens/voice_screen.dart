@@ -16,10 +16,15 @@ import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../theme/tokens.dart';
 import '../widgets/clock_dial.dart';
+import '../widgets/preview_bar.dart';
 import '../widgets/renaissance.dart';
 
 enum _Phase { ready, recording, processing, feedback }
 
+/// The voice interview: the examiner asks the alarm's questions one at a time,
+/// each answered aloud and graded. A question must reach the pass mark before the
+/// next one is asked, exactly like multiple choice, so the alarm stays on until
+/// the whole interview is done.
 class VoiceScreen extends StatefulWidget {
   const VoiceScreen({super.key});
 
@@ -32,6 +37,7 @@ class _VoiceScreenState extends State<VoiceScreen> with SingleTickerProviderStat
 
   final _recorder = AudioRecorder();
   late final AnimationController _wave;
+  int _index = 0;
   _Phase _phase = _Phase.ready;
   int _secs = 0;
   double _level = 0;
@@ -72,7 +78,7 @@ class _VoiceScreenState extends State<VoiceScreen> with SingleTickerProviderStat
     if (!await _recorder.hasPermission()) {
       if (mounted) {
         setState(() => _error =
-            'Microphone access is needed for this trial. Allow it in Settings, or use emergency dismiss.');
+            'Microphone access is needed for the interview. Allow it in the phone settings, then tap the microphone again.');
       }
       return;
     }
@@ -115,13 +121,14 @@ class _VoiceScreenState extends State<VoiceScreen> with SingleTickerProviderStat
   Future<void> _submit(AppState app) async {
     final path = _path;
     if (path == null) return;
+    final question = app.session!.questions[_index];
     setState(() {
       _phase = _Phase.processing;
       _error = null;
     });
     try {
       final bytes = await File(path).readAsBytes();
-      final grade = await app.submitVoice(_secs, base64Encode(bytes));
+      final grade = await app.submitVoice(question.id, _secs, base64Encode(bytes));
       if (!mounted) return;
       setState(() {
         _grade = grade;
@@ -130,14 +137,27 @@ class _VoiceScreenState extends State<VoiceScreen> with SingleTickerProviderStat
     } on ApiException catch (e) {
       if (mounted) {
         setState(() {
-          _error = e.message;
+          _error = e.isNetwork ? 'The examiner needs the internet. Reconnect, then submit again.' : e.message;
           _phase = _Phase.ready;
         });
       }
     }
   }
 
-  Future<void> _finish(AppState app) async {
+  /// Moves to the next question, or finishes the interview after the last one.
+  Future<void> _next(AppState app) async {
+    final total = app.session!.questions.length;
+    if (_index + 1 < total) {
+      _deleteRecording();
+      setState(() {
+        _index++;
+        _phase = _Phase.ready;
+        _secs = 0;
+        _grade = null;
+        _error = null;
+      });
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;
@@ -162,18 +182,6 @@ class _VoiceScreenState extends State<VoiceScreen> with SingleTickerProviderStat
     });
   }
 
-  Future<void> _emergency(AppState app) async {
-    final ok = await showConfirm(
-      context,
-      title: 'Emergency dismiss',
-      message: 'Silence the alarm without answering? This is recorded.',
-      confirmLabel: 'Dismiss',
-    );
-    if (!ok || !mounted) return;
-    await app.dismissAlarm(emergency: true);
-    if (mounted) context.go('/home');
-  }
-
   String get _status => switch (_phase) {
         _Phase.ready => _path != null ? 'Recorded $kEmDash submit, or record again' : 'Tap to speak',
         _Phase.recording => 'Recording$kEllipsis',
@@ -185,47 +193,60 @@ class _VoiceScreenState extends State<VoiceScreen> with SingleTickerProviderStat
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     final session = app.session;
-    if (session == null || !session.isVoice) {
+    if (session == null || !session.isVoice || session.questions.isEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) context.go(app.ringingAlarm == null ? '/home' : '/ring');
       });
       return const SizedBox.shrink();
     }
     final c = context.colors;
+    final total = session.questions.length;
+    final question = session.questions[_index];
     final recording = _phase == _Phase.recording;
     final grade = _grade;
+    final passed = grade?.passed ?? false;
+    final isLast = _index + 1 >= total;
+    final progress = (_index + (passed ? 1 : 0)) / total;
 
     return Screen(
-      footer: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (_phase == _Phase.feedback && grade != null) ...[
-            GoldButton(label: 'Continue', busy: _busy, onPressed: () => _finish(app)),
-            if (!grade.passed) ...[
-              const SizedBox(height: 12),
-              GoldButton(label: 'Try Again', variant: GoldVariant.outline, onPressed: _tryAgain),
-            ],
-          ] else
-            GoldButton(
+      footer: _phase == _Phase.feedback && grade != null
+          ? (passed
+              ? GoldButton(
+                  label: isLast ? 'See Results' : 'Next Question',
+                  busy: _busy,
+                  onPressed: () => _next(app),
+                )
+              : GoldButton(label: 'Try Again', onPressed: _tryAgain))
+          : GoldButton(
               label: 'Submit Explanation',
               onPressed: _path != null && _phase == _Phase.ready ? () => _submit(app) : null,
               busy: _phase == _Phase.processing,
             ),
-          if (_error != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: GoldButton(label: 'Emergency Dismiss', variant: GoldVariant.ghost, onPressed: () => _emergency(app)),
-            ),
-        ],
-      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const SizedBox(height: 16),
+          const PreviewBar(),
+          Text(
+            'QUESTION ${_index + 1} OF $total',
+            textAlign: TextAlign.center,
+            style: Typo.display(12, color: c.mutedForeground, letterSpacing: 3.6),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            height: 2,
+            color: c.muted,
+            alignment: Alignment.centerLeft,
+            child: AnimatedFractionallySizedBox(
+              duration: const Duration(milliseconds: 700),
+              widthFactor: progress.clamp(0.0, 1.0),
+              child: Container(color: c.primary),
+            ),
+          ),
+          const SizedBox(height: 24),
           GoldText('Defend Thy Knowledge', style: Typo.display(30)),
           const Ornament(),
-          Panel(child: Text(session.prompt ?? '', style: Typo.serif(22, color: c.foreground))),
-          const SizedBox(height: 32),
+          Panel(child: Text(question.text, style: Typo.serif(22, color: c.foreground))),
+          const SizedBox(height: 28),
           Center(
             child: SizedBox(
               width: 192,
@@ -312,10 +333,18 @@ class _VoiceScreenState extends State<VoiceScreen> with SingleTickerProviderStat
                 children: [
                   Text(
                     'Score $kMiddot ${grade.score}%  (pass ${grade.passScore}%)',
-                    style: Typo.display(16, color: grade.passed ? c.primary : c.accent),
+                    style: Typo.display(16, color: passed ? c.primary : c.accent),
                   ),
                   const SizedBox(height: 8),
                   Text(grade.feedback, style: Typo.serif(20, italic: true, color: c.foreground)),
+                  if (!passed)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        'Answer again to reach the pass mark and move on.',
+                        style: Typo.sans(12, color: c.mutedForeground),
+                      ),
+                    ),
                   if (grade.mock)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),

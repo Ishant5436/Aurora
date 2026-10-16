@@ -13,7 +13,6 @@ class SettingsModel {
     required this.haptics,
     required this.animations,
     required this.notifications,
-    required this.microphone,
     required this.theme,
   });
 
@@ -25,7 +24,6 @@ class SettingsModel {
         haptics: true,
         animations: true,
         notifications: true,
-        microphone: false,
         theme: 'dark',
       );
 
@@ -39,7 +37,6 @@ class SettingsModel {
       haptics: _bool(j['haptics'], d.haptics),
       animations: _bool(j['animations'], d.animations),
       notifications: _bool(j['notifications'], d.notifications),
-      microphone: _bool(j['microphone'], d.microphone),
       theme: _str(j['theme'], d.theme),
     );
   }
@@ -51,7 +48,6 @@ class SettingsModel {
   final bool haptics;
   final bool animations;
   final bool notifications;
-  final bool microphone;
   final String theme;
 
   bool get isDark => theme == 'dark';
@@ -64,7 +60,6 @@ class SettingsModel {
         'haptics': haptics,
         'animations': animations,
         'notifications': notifications,
-        'microphone': microphone,
         'theme': theme,
       };
 
@@ -76,7 +71,6 @@ class SettingsModel {
     bool? haptics,
     bool? animations,
     bool? notifications,
-    bool? microphone,
     String? theme,
   }) {
     return SettingsModel(
@@ -87,7 +81,6 @@ class SettingsModel {
       haptics: haptics ?? this.haptics,
       animations: animations ?? this.animations,
       notifications: notifications ?? this.notifications,
-      microphone: microphone ?? this.microphone,
       theme: theme ?? this.theme,
     );
   }
@@ -133,8 +126,13 @@ class AlarmModel {
   final List<int> days;
   final bool enabled;
   final String difficulty;
+
+  /// 'MCQ', 'Voice' or 'Random'. Exactly what the user picked, for any source.
   final String type;
   final int questions;
+
+  /// The built-in topic. Ignored when [noteId] is set: the alarm then quizzes
+  /// on those notes and nothing else.
   final String topic;
   final String? noteId;
 
@@ -142,8 +140,8 @@ class AlarmModel {
   bool get hasNote => noteId != null;
   bool get isOneShot => days.isEmpty;
 
-  /// Quizzes built from notes are always multiple choice.
-  String get effectiveType => hasNote ? 'MCQ' : type;
+  /// True when the alarm may ask spoken questions, so it needs the microphone.
+  bool get usesVoice => type == 'Voice' || type == 'Random';
 
   /// Body for create and patch requests (no id).
   Map<String, dynamic> toApiJson() => {
@@ -198,6 +196,7 @@ class NoteModel {
     required this.title,
     required this.sourceType,
     required this.questionCount,
+    this.interviewCount = 0,
     this.createdAt,
   });
 
@@ -206,6 +205,7 @@ class NoteModel {
         title: _str(j['title'], 'Untitled notes'),
         sourceType: _str(j['sourceType'], 'text'),
         questionCount: _int(j['questionCount'], 0),
+        interviewCount: _int(j['interviewCount'], 0),
         createdAt: j['createdAt'] is String ? DateTime.tryParse(j['createdAt'] as String) : null,
       );
 
@@ -213,7 +213,13 @@ class NoteModel {
   final String title;
   final String sourceType;
   final int questionCount;
+
+  /// Spoken-interview questions written from these notes. Notes uploaded before
+  /// interviews existed have none and can only back multiple-choice alarms.
+  final int interviewCount;
   final DateTime? createdAt;
+
+  bool get supportsVoice => interviewCount > 0;
 }
 
 class UserModel {
@@ -242,8 +248,10 @@ class UserModel {
   final SettingsModel settings;
 }
 
+/// One question of a challenge: multiple choice (with [options]) or a spoken
+/// interview question (no options; [text] is what the examiner asks).
 class QuizQuestion {
-  const QuizQuestion({required this.id, required this.text, required this.options});
+  const QuizQuestion({required this.id, required this.text, this.options = const []});
 
   factory QuizQuestion.fromJson(Map<String, dynamic> j) => QuizQuestion(
         id: _str(j['id'], ''),
@@ -264,7 +272,6 @@ class ChallengeSession {
     required this.topic,
     required this.difficulty,
     this.questions = const [],
-    this.prompt,
     this.passScore,
   });
 
@@ -276,16 +283,16 @@ class ChallengeSession {
         questions: j['questions'] is List
             ? (j['questions'] as List).whereType<Map<String, dynamic>>().map(QuizQuestion.fromJson).toList()
             : const [],
-        prompt: j['prompt'] is String ? j['prompt'] as String : null,
         passScore: j['passScore'] is num ? (j['passScore'] as num).toInt() : null,
       );
 
   final String id;
   final String kind;
+
+  /// The built-in topic, or the title of the notes the quiz comes from.
   final String topic;
   final String difficulty;
   final List<QuizQuestion> questions;
-  final String? prompt;
   final int? passScore;
 
   bool get isVoice => kind == 'voice';
@@ -315,6 +322,7 @@ class AnswerResult {
   final String? explanation;
 }
 
+/// The examiner's verdict on one spoken answer.
 class VoiceGrade {
   const VoiceGrade({
     required this.score,
@@ -322,6 +330,7 @@ class VoiceGrade {
     required this.passed,
     required this.passScore,
     required this.mock,
+    required this.remaining,
   });
 
   factory VoiceGrade.fromJson(Map<String, dynamic> j) => VoiceGrade(
@@ -330,6 +339,7 @@ class VoiceGrade {
         passed: _bool(j['passed'], false),
         passScore: _int(j['passScore'], 70),
         mock: _bool(j['mock'], false),
+        remaining: _int(j['remaining'], 0),
       );
 
   final int score;
@@ -337,6 +347,9 @@ class VoiceGrade {
   final bool passed;
   final int passScore;
   final bool mock;
+
+  /// Spoken questions still unanswered, counting this one if it did not pass.
+  final int remaining;
 }
 
 class ChallengeResult {

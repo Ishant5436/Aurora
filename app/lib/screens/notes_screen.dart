@@ -86,7 +86,11 @@ class _NoteTile extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(note.title, style: Typo.serif(22, color: c.foreground)),
-                Text('${note.questionCount} questions$added', style: Typo.sans(13, color: c.mutedForeground)),
+                Text(
+                  '${note.questionCount} questions $kMiddot '
+                  '${note.supportsVoice ? '${note.interviewCount} interview questions' : 'quiz only'}$added',
+                  style: Typo.sans(13, color: c.mutedForeground),
+                ),
               ],
             ),
           ),
@@ -97,7 +101,8 @@ class _NoteTile extends StatelessWidget {
               final ok = await showConfirm(
                 context,
                 title: 'Delete notes',
-                message: 'Delete "${note.title}" and its quiz? Alarms using it will switch back to a topic.',
+                message: 'Delete "${note.title}" and everything made from it? '
+                    'Notes that an alarm still uses cannot be deleted.',
                 confirmLabel: 'Delete',
               );
               if (!ok) return;
@@ -195,7 +200,10 @@ class _AddNoteSheetState extends State<_AddNoteSheet> {
       );
       if (!mounted) return;
       Navigator.of(context).pop();
-      app.showNotice('Quiz ready: ${note.questionCount} questions from "${note.title}".');
+      app.showNotice(
+        'Ready: ${note.questionCount} questions and ${note.interviewCount} interview questions '
+        'from "${note.title}".',
+      );
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } finally {

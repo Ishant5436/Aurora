@@ -10,6 +10,7 @@ import '../theme/app_theme.dart';
 import '../theme/tokens.dart';
 import '../widgets/clock_dial.dart';
 import '../widgets/hero_art.dart';
+import '../widgets/preview_bar.dart';
 import '../widgets/renaissance.dart';
 
 class RingScreen extends StatefulWidget {
@@ -55,31 +56,27 @@ class _RingScreenState extends State<RingScreen> with TickerProviderStateMixin {
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() => _error = e.isNetwork
-          ? 'Cannot reach the oracle. Check thy connection and try again, or use emergency dismiss.'
+          ? 'Cannot reach the oracle. Check thy connection and try again.'
           : e.message);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
-  Future<void> _emergency(AppState app) async {
-    final ok = await showConfirm(
-      context,
-      title: 'Emergency dismiss',
-      message: 'Silence the alarm without answering? This is recorded.',
-      confirmLabel: 'Dismiss',
-    );
-    if (!ok || !mounted) return;
-    await app.dismissAlarm(emergency: true);
-    if (mounted) context.go('/home');
-  }
-
-  String _subtitle(AlarmModel alarm) {
+  /// Says exactly what this alarm will ask: its type, how many, and the source
+  /// it chose (a topic, or the title of the notes).
+  String _subtitle(AppState app, AlarmModel alarm) {
     final n = alarm.questions;
-    final kind = alarm.effectiveType;
-    if (kind == 'Voice') return '${alarm.label} $kEmDash a spoken trial awaits';
-    if (kind == 'Random') return '${alarm.label} $kEmDash a trial of knowledge or voice awaits';
-    return '${alarm.label} $kEmDash $n trial${n > 1 ? 's' : ''} await';
+    final plural = n > 1 ? 's' : '';
+    final source = alarm.hasNote
+        ? (app.notes.where((x) => x.id == alarm.noteId).firstOrNull?.title ?? 'thy notes')
+        : alarm.topic;
+    final what = switch (alarm.type) {
+      'Voice' => '$n spoken question$plural',
+      'Random' => '$n question$plural, written or spoken',
+      _ => '$n trial$plural',
+    };
+    return '${alarm.label} $kEmDash $what on $source';
   }
 
   @override
@@ -107,11 +104,7 @@ class _RingScreenState extends State<RingScreen> with TickerProviderStateMixin {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (app.previewMode)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Text('PREVIEW', style: Typo.display(11, color: c.accent, letterSpacing: 3.6)),
-            ),
+          const PreviewBar(),
           SizedBox(
             width: 256,
             height: 256,
@@ -154,7 +147,7 @@ class _RingScreenState extends State<RingScreen> with TickerProviderStateMixin {
           GoldText('The Hour Has Come', style: Typo.display(34)),
           const Ornament(),
           Text(
-            _subtitle(alarm),
+            _subtitle(app, alarm),
             textAlign: TextAlign.center,
             style: Typo.serif(20, italic: true, color: c.foreground),
           ),
@@ -180,19 +173,6 @@ class _RingScreenState extends State<RingScreen> with TickerProviderStateMixin {
             glow: true,
             busy: _busy,
             onPressed: () => _begin(app),
-          ),
-          const SizedBox(height: 20),
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () => _emergency(app),
-            child: Padding(
-              padding: const EdgeInsets.all(8),
-              child: Text(
-                'EMERGENCY DISMISS',
-                style: Typo.display(12, color: c.mutedForeground, letterSpacing: 2.4)
-                    .copyWith(decoration: TextDecoration.underline),
-              ),
-            ),
           ),
         ],
       ),

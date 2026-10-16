@@ -18,7 +18,6 @@ const patchSchema = z
     haptics: z.boolean(),
     animations: z.boolean(),
     notifications: z.boolean(),
-    microphone: z.boolean(),
     theme: z.enum(THEMES),
   })
   .partial();

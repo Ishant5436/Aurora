@@ -112,14 +112,15 @@ async function getQuestions({ topic, difficulty, count }) {
     }
   }
 
-  // Widen the net: same topic at any difficulty, then any built-in topic.
-  for (const match of [{ topic }, { topic: { $exists: true } }]) {
-    if (picked.length >= count) break;
-    picked = picked.concat(await sample(match, count - picked.length, picked.map((p) => p._id)));
-  }
-
+  // Never widen to another topic or difficulty: the alarm asked for exactly this
+  // source. If the bank is short and the AI cannot fill the gap, the quiz is
+  // shorter than requested rather than quietly about something else.
   if (picked.length === 0) {
-    throw new HttpError(503, 'no_questions', 'No questions are available yet. Run the server once to seed the bank.');
+    throw new HttpError(
+      503,
+      'no_questions',
+      `No ${difficulty} questions about ${topic} are available right now. Please try again in a moment.`,
+    );
   }
   topUp(topic, difficulty);
   return picked;

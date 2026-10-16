@@ -105,30 +105,44 @@ const VOICE_PROMPTS = {
   JavaScript: [
     'Explain how closures work in JavaScript and give one practical use for them.',
     'Describe the JavaScript event loop and why long synchronous tasks block the UI.',
+    'Explain the difference between var, let and const, and how scope and hoisting affect each of them.',
+    'Describe how promises and async await work, and how you would handle errors across several concurrent requests.',
   ],
   Algorithms: [
     'Explain the difference between breadth-first and depth-first search, and when you would choose each.',
     'Walk through how binary search works and why it requires sorted input.',
+    'Explain what Big O notation tells you, and compare searching a hash map with searching a sorted array.',
+    'Describe how a hash table handles collisions, and what happens to performance as it fills up.',
   ],
   'System Design': [
     'Explain how you would scale a read-heavy web service, and name one trade-off of your approach.',
     'Describe what a cache is, where you would place one, and how you would handle invalidation.',
+    'Explain the trade-offs between a relational database and a document store when designing a new service.',
+    'Describe how you would make a service highly available, and which failure you would worry about first.',
   ],
   Databases: [
     'Explain how a database index speeds up queries, and describe one trade-off of adding too many indexes.',
     'Describe what a database transaction is and what the ACID properties guarantee.',
+    'Explain the difference between an inner join and a left join, and when each is the right choice.',
+    'Describe database normalization, and one situation where you would deliberately denormalize.',
   ],
   Networking: [
     'Explain at a high level what happens when you type a URL into a browser and press enter.',
     'Compare TCP and UDP and give an example use case for each.',
+    'Explain how HTTPS protects a connection, including what the TLS handshake accomplishes.',
+    'Describe what DNS does and how a lookup travels from your device to an authoritative server.',
   ],
   React: [
     'Explain how React decides when to re-render a component, and one way to avoid unnecessary renders.',
     'Describe the difference between state and props, and who owns each.',
+    'Explain what the useEffect hook is for, and how its dependency array changes when it runs.',
+    'Describe how you would share state between distant components, and the trade-offs of the options.',
   ],
   Python: [
     'Explain the difference between a list and a tuple in Python and when you would use each.',
     'Describe how Python generators work and why they save memory.',
+    'Explain what decorators are in Python and show where you would use one.',
+    'Describe the difference between a shallow copy and a deep copy, and when each causes surprises.',
   ],
 };
 

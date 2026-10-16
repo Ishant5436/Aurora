@@ -23,19 +23,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // we do not hit the server and reschedule every alarm on every tick.
   double? _dragVolume;
 
-  Future<void> _setMicrophone(AppState app, bool on) async {
-    if (on) {
-      final probe = AudioRecorder();
-      final granted = await probe.hasPermission();
-      await probe.dispose();
-      if (!granted) {
-        app.showNotice('Microphone permission was denied. Enable it in the system Settings app.');
-        return;
-      }
-    }
-    await app.updateSettings(app.settings.copyWith(microphone: on));
-  }
-
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
@@ -142,7 +129,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 Divider(height: 1, color: c.border),
                 toggleRow('Notifications', s.notifications, (v) => app.updateSettings(s.copyWith(notifications: v))),
                 Divider(height: 1, color: c.border),
-                toggleRow('Microphone access', s.microphone, (v) => _setMicrophone(app, v)),
+                const _MicrophoneRow(),
               ],
             ),
           ),
@@ -211,6 +198,74 @@ class _SettingsScreenState extends State<SettingsScreen> {
             textAlign: TextAlign.center,
             style: Typo.sans(11, color: c.mutedForeground.withValues(alpha: 0.7)),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Whether the voice interview can use the microphone. It is a status, not a
+/// switch: voice alarms always run as voice alarms, so they need this allowed.
+class _MicrophoneRow extends StatefulWidget {
+  const _MicrophoneRow();
+
+  @override
+  State<_MicrophoneRow> createState() => _MicrophoneRowState();
+}
+
+class _MicrophoneRowState extends State<_MicrophoneRow> {
+  bool? _granted;
+
+  @override
+  void initState() {
+    super.initState();
+    _check(request: false);
+  }
+
+  Future<void> _check({required bool request}) async {
+    var ok = false;
+    final probe = AudioRecorder();
+    try {
+      ok = await probe.hasPermission(request: request);
+    } catch (_) {
+      ok = false; // the recorder plugin is unavailable (for example in tests)
+    }
+    try {
+      await probe.dispose();
+    } catch (_) {
+      // nothing to release if the plugin never started
+    }
+    if (mounted) setState(() => _granted = ok);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final granted = _granted;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Microphone for voice interviews', style: Typo.sans(16, color: c.foreground)),
+                Text(
+                  granted == null
+                      ? 'Checking$kEllipsis'
+                      : granted
+                          ? 'Allowed'
+                          : 'Not allowed yet. If asking does nothing, enable it in the phone settings.',
+                  style: Typo.sans(12, color: granted == false ? c.accent : c.mutedForeground),
+                ),
+              ],
+            ),
+          ),
+          if (granted == false) ...[
+            const SizedBox(width: 12),
+            AuroraChip(label: 'Allow', active: true, onTap: () => _check(request: true)),
+          ],
         ],
       ),
     );

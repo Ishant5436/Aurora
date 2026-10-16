@@ -152,10 +152,13 @@ class ApiClient {
   Future<void> deleteNote(String id) => _request('DELETE', '/api/notes/$id');
 
   // Challenges
-  Future<Map<String, dynamic>> startChallenge({String? alarmId, String? kind}) => _request(
+  /// Opens a challenge for an alarm. The server reads the type, source,
+  /// difficulty and question count from the alarm itself, so nothing about the
+  /// quiz can be overridden from here.
+  Future<Map<String, dynamic>> startChallenge({required String alarmId}) => _request(
         'POST',
         '/api/challenges/start',
-        body: {'alarmId': ?alarmId, 'kind': ?kind},
+        body: {'alarmId': alarmId},
       );
 
   Future<Map<String, dynamic>> answer(String sessionId, String questionId, int selected) => _request(
@@ -164,11 +167,13 @@ class ApiClient {
         body: {'questionId': questionId, 'selected': selected},
       );
 
-  Future<Map<String, dynamic>> submitVoice(String sessionId, int seconds, String base64Wav) => _request(
+  Future<Map<String, dynamic>> submitVoice(String sessionId, String questionId, int seconds, String base64Wav) =>
+      _request(
         'POST',
         '/api/challenges/$sessionId/voice',
         timeout: const Duration(seconds: 90),
         body: {
+          'questionId': questionId,
           'seconds': seconds,
           'audio': {'mimeType': 'audio/wav', 'base64': base64Wav},
         },
@@ -176,7 +181,4 @@ class ApiClient {
 
   Future<Map<String, dynamic>> complete(String sessionId) =>
       _request('POST', '/api/challenges/$sessionId/complete', body: <String, dynamic>{});
-
-  Future<void> abandon(String sessionId) =>
-      _request('POST', '/api/challenges/$sessionId/abandon', body: <String, dynamic>{});
 }

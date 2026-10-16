@@ -7,7 +7,14 @@ const ChallengeSession = require('../models/ChallengeSession');
 const { requireAuth } = require('../middleware/auth');
 const { aiLimiter } = require('../middleware/limits');
 const { objectId, body, params } = require('../middleware/validate');
-const { notFoundError, conflict, badRequest, unauthorized } = require('../middleware/errors');
+const {
+  HttpError,
+  notFoundError,
+  conflict,
+  badRequest,
+  unauthorized,
+  unavailable,
+} = require('../middleware/errors');
 const { DIFFICULTIES, TOPICS } = require('../config/constants');
 const gemini = require('../services/gemini');
 const { getQuestions, getNoteQuestions } = require('../services/questions');
@@ -38,6 +45,7 @@ const answerSchema = z.strictObject({
   selected: z.number().int().min(0).max(3),
 });
 const voiceSchema = z.strictObject({
+  questionId: objectId,
   seconds: z.number().min(0).max(300),
   audio: z
     .strictObject({ mimeType: z.enum(AUDIO_TYPES), base64: z.string().min(1).max(8_500_000) })
@@ -45,8 +53,8 @@ const voiceSchema = z.strictObject({
   transcript: z.string().max(5000).optional(),
 });
 
-// The client only ever sees this view: answerIndex and explanations of
-// unsolved questions never leave the server.
+// The client only ever sees this view: answerIndex, explanations of unsolved
+// questions and the key points a spoken answer is graded against never leave the server.
 function publicSession(s) {
   const base = {
     id: s.id,
@@ -68,7 +76,16 @@ function publicSession(s) {
             attempts: q.attempts,
           })),
         }
-      : { prompt: s.voicePrompt, passScore: VOICE_PASS_SCORE[s.difficulty] };
+      : {
+          total: s.voiceQuestions.length,
+          passScore: VOICE_PASS_SCORE[s.difficulty],
+          questions: s.voiceQuestions.map((q) => ({
+            id: q.id,
+            text: q.prompt,
+            solved: q.solved,
+            attempts: q.attempts.length,
+          })),
+        };
   return { ...base, ...detail, ...(s.result ? { result: s.toJSON().result } : {}) };
 }
 
@@ -85,6 +102,13 @@ const mcqFeedback = (accuracy) =>
     ? "Flawless. Thy mind is as sharp as Brunelleschi's compass."
     : 'Well fought. Revisit the questions you stumbled upon to strengthen thy recall.';
 
+// "Random" is itself one of the options an alarm can have: it picks between the
+// two quiz types. A fixed type is never swapped for the other one.
+function chooseKind(requested, voiceReady) {
+  if (requested !== 'random') return requested;
+  return voiceReady && Math.random() < 0.5 ? 'voice' : 'mcq';
+}
+
 router.post('/start', aiLimiter, smallJson, async (req, res) => {
   const input = body(startSchema, req);
   const user = await User.findById(req.userId).select('settings');
@@ -97,8 +121,7 @@ router.post('/start', aiLimiter, smallJson, async (req, res) => {
     if (!alarm) throw notFoundError('Alarm');
     alarmId = alarm._id;
     cfg = {
-      // The app may downgrade to multiple choice (e.g. microphone switched off) but never upgrade.
-      kind: input.kind === 'mcq' ? 'mcq' : ALARM_KIND[alarm.type],
+      kind: ALARM_KIND[alarm.type],
       topic: alarm.topic,
       noteId: alarm.noteId ? String(alarm.noteId) : undefined,
       difficulty: alarm.difficulty,
@@ -110,42 +133,61 @@ router.post('/start', aiLimiter, smallJson, async (req, res) => {
   cfg.topic ??= user.settings.topics[0] ?? 'JavaScript';
   cfg.count ??= 3;
 
-  let kind = cfg.kind === 'random' ? (Math.random() < 0.5 ? 'mcq' : 'voice') : cfg.kind;
-  // Quizzes built from the user's notes are multiple choice, and voice needs the AI.
-  if (cfg.noteId || (kind === 'voice' && !voice.voiceAvailable())) kind = 'mcq';
+  // The source is exactly what the alarm selected: its notes if it uses any,
+  // otherwise its topic. Nothing else is ever substituted.
+  let note = null;
+  if (cfg.noteId) {
+    note = await Note.findOne({ _id: cfg.noteId, userId: req.userId }).select('+interview');
+    if (!note) {
+      throw new HttpError(
+        409,
+        'source_missing',
+        'The notes this alarm uses no longer exist. Edit the alarm to choose a source.',
+      );
+    }
+  }
 
-  const common = { userId: req.userId, alarmId, difficulty: cfg.difficulty };
+  const voiceReady = voice.voiceAvailable() && (!note || note.interview.length > 0);
+  const kind = chooseKind(cfg.kind, voiceReady);
 
   if (kind === 'voice') {
-    const prompt = await voice.pickPrompt({ topic: cfg.topic, difficulty: cfg.difficulty });
-    const session = await ChallengeSession.create({ ...common, kind, topic: cfg.topic, voicePrompt: prompt });
+    if (!voice.voiceAvailable()) {
+      throw unavailable('The voice interview needs the AI examiner. Set GEMINI_API_KEY on the server.');
+    }
+    if (note && note.interview.length === 0) {
+      throw conflict('These notes have no interview questions yet. Upload them again to enable voice interviews.');
+    }
+  }
+
+  const common = {
+    userId: req.userId,
+    alarmId,
+    difficulty: cfg.difficulty,
+    topic: note ? note.title : cfg.topic,
+    noteId: note?._id,
+  };
+
+  if (kind === 'voice') {
+    const picked = note
+      ? voice
+          .shuffled(note.interview)
+          .slice(0, cfg.count)
+          .map((i) => ({ prompt: i.prompt, keyPoints: [...i.keyPoints] }))
+      : await voice.pickPrompts({ topic: cfg.topic, difficulty: cfg.difficulty, count: cfg.count });
+    const session = await ChallengeSession.create({ ...common, kind: 'voice', voiceQuestions: picked });
     return res.status(201).json({ session: publicSession(session) });
   }
 
-  let questions = [];
-  let note;
-  if (cfg.noteId) {
-    note = await Note.findOne({ _id: cfg.noteId, userId: req.userId });
-    if (note) {
-      questions = await getNoteQuestions({
-        noteId: note._id,
-        userId: req.userId,
-        difficulty: cfg.difficulty,
-        count: cfg.count,
-      });
-    }
-  }
-  // A deleted or empty note must never leave the alarm unable to ring a quiz.
+  const questions = note
+    ? await getNoteQuestions({ noteId: note._id, userId: req.userId, difficulty: cfg.difficulty, count: cfg.count })
+    : await getQuestions({ topic: cfg.topic, difficulty: cfg.difficulty, count: cfg.count });
   if (!questions.length) {
-    note = undefined;
-    questions = await getQuestions({ topic: cfg.topic, difficulty: cfg.difficulty, count: cfg.count });
+    throw new HttpError(409, 'source_empty', 'These notes have no quiz questions yet.');
   }
 
   const session = await ChallengeSession.create({
     ...common,
     kind: 'mcq',
-    topic: note ? note.title : cfg.topic,
-    noteId: note?._id,
     questions: questions.map((q) => ({
       text: q.text,
       options: q.options,
@@ -189,33 +231,44 @@ router.post('/:id/answer', smallJson, async (req, res) => {
   });
 });
 
+// Grades one spoken answer. A question is solved once it reaches the pass mark;
+// until then it can be answered again, just like a multiple-choice question.
 router.post('/:id/voice', aiLimiter, voiceJson, async (req, res) => {
   const { id } = params(idParams, req);
-  const { seconds, audio, transcript } = body(voiceSchema, req);
+  const { questionId, seconds, audio, transcript } = body(voiceSchema, req);
   if (gemini.isConfigured() && !audio && !transcript) {
     throw badRequest('Send a recording (audio) or a transcript of your answer');
   }
   const session = await loadActive(id, req.userId, 'voice');
+  const question = session.voiceQuestions.id(questionId);
+  if (!question) throw notFoundError('Question');
+  if (question.solved) throw conflict('That question is already answered');
 
   const result = await voice.evaluate({
-    prompt: session.voicePrompt,
+    prompt: question.prompt,
+    keyPoints: question.keyPoints,
     difficulty: session.difficulty,
     audio: audio ? { mimeType: GEMINI_MIME[audio.mimeType] ?? audio.mimeType, base64: audio.base64 } : undefined,
     transcript,
     seconds,
   });
 
-  session.voiceAttempts.push({ score: result.score, feedback: result.feedback, seconds, mock: result.mock });
+  const passScore = VOICE_PASS_SCORE[session.difficulty];
+  const passed = result.score >= passScore;
+  question.attempts.push({ score: result.score, feedback: result.feedback, seconds, mock: result.mock });
+  question.bestScore = Math.max(question.bestScore, result.score);
+  if (passed) question.solved = true;
   await session.save();
 
-  const passScore = VOICE_PASS_SCORE[session.difficulty];
   res.json({
     score: result.score,
     feedback: result.feedback,
-    passed: result.score >= passScore,
+    passed,
     passScore,
     mock: result.mock,
-    attempts: session.voiceAttempts.length,
+    attempts: question.attempts.length,
+    solved: question.solved,
+    remaining: session.voiceQuestions.filter((q) => !q.solved).length,
   });
 });
 
@@ -233,11 +286,13 @@ router.post('/:id/complete', smallJson, async (req, res) => {
     attempts = session.questions.reduce((sum, q) => sum + q.attempts, 0);
     feedback = mcqFeedback(accuracy);
   } else {
-    if (!session.voiceAttempts.length) throw conflict('Give your answer before finishing');
-    const best = session.voiceAttempts.reduce((a, b) => (b.score > a.score ? b : a));
-    accuracy = Math.round(best.score);
-    attempts = session.voiceAttempts.length;
-    feedback = best.feedback;
+    if (session.voiceQuestions.some((q) => !q.solved)) throw conflict('Answer every question before finishing');
+    const best = session.voiceQuestions.map((q) => q.bestScore);
+    accuracy = Math.round(best.reduce((sum, s) => sum + s, 0) / best.length);
+    attempts = session.voiceQuestions.reduce((sum, q) => sum + q.attempts.length, 0);
+    // The most useful note is about the weakest answer.
+    const weakest = session.voiceQuestions.reduce((a, b) => (b.bestScore < a.bestScore ? b : a));
+    feedback = weakest.attempts.at(-1)?.feedback ?? '';
   }
 
   const success = isDismissed({ kind: session.kind, difficulty: session.difficulty, accuracy });
@@ -252,16 +307,6 @@ router.post('/:id/complete', smallJson, async (req, res) => {
   };
   await session.save();
   res.json({ result: session.toJSON().result });
-});
-
-// "Emergency dismiss": always allowed (an alarm must never trap someone), but recorded.
-router.post('/:id/abandon', smallJson, async (req, res) => {
-  const { id } = params(idParams, req);
-  const session = await loadActive(id, req.userId);
-  session.status = 'abandoned';
-  session.completedAt = new Date();
-  await session.save();
-  res.json({ status: session.status });
 });
 
 module.exports = router;

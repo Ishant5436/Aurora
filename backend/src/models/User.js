@@ -10,7 +10,6 @@ const settingsSchema = new Schema(
     haptics: { type: Boolean, default: true },
     animations: { type: Boolean, default: true },
     notifications: { type: Boolean, default: true },
-    microphone: { type: Boolean, default: false },
     theme: { type: String, enum: THEMES, default: 'dark' },
   },
   { _id: false },
